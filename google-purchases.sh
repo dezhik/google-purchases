@@ -1,17 +1,17 @@
 #!/bin/bash
-SCRIPT_VERSION=0.1.0
+SCRIPT_VERSION=0.1.1
 GOOGLE_API_BASE_URI="https://www.googleapis.com/androidpublisher/v3/applications/"
 GOOGLE_API_OAUTH_URI="https://accounts.google.com/o/oauth2/token"
 README_MSG="See https://github.com/dezhik/google-purchases/blob/master/README.md for more details."
+DEFAULT_CONF_LOCATION="$HOME/.google-purchases.conf"
 
 COMMAND="$1"
 shift
 
 IS_PRODUCT=$(echo "${COMMAND}" | grep -Eo "^products" )
 
-if [[ "${COMMAND}" != "products.get" && ${COMMAND} != "products.acknowledge" && ${COMMAND} != "subscriptions.get" ]]; then
-	echo "\"${COMMAND}\" is not a supported command in v. ${SCRIPT_VERSION}"
-	echo "Usage: google-api-util command [-options]"
+function usage {
+	echo "Usage: ./google-purchases.sh command [-options]"
 	echo "where command in:"
 	echo "   products.get"
 	echo "   products.acknowledge"
@@ -20,25 +20,29 @@ if [[ "${COMMAND}" != "products.get" && ${COMMAND} != "products.acknowledge" && 
 	echo "Version ${SCRIPT_VERSION}."
 	echo ${README_MSG}
 	exit 1
+}
+
+if [[ "${COMMAND}" != "products.get" && ${COMMAND} != "products.acknowledge" && ${COMMAND} != "subscriptions.get" ]]; then
+	echo "\"${COMMAND}\" is not a supported command in v. ${SCRIPT_VERSION}"
+	usage
 fi
 
 while getopts a:c:p:t:s: option
 do
-case "${option}"
-in
-a) ACCESS_TOKEN=${OPTARG};;
-c) CONF_FILE=${OPTARG};;
-p) PACKAGE=${OPTARG};;
-t) PURCHASE_TOKEN=${OPTARG};;
-s) SKU=${OPTARG};;
-esac
+	case "${option}"
+	in
+		a) ACCESS_TOKEN=${OPTARG};;
+		c) CONF_FILE=${OPTARG};;
+		p) PACKAGE=${OPTARG};;
+		t) PURCHASE_TOKEN=${OPTARG};;
+		s) SKU=${OPTARG};;
+	esac
 done
 
-if [[ ! -z "$CONF_FILE" ]]; then
-	if [ -f "$CONF_FILE" ]; then
-		while read LINE; do 
-			case "${LINE%=*}"
-			in
+function read_conf() {
+	while read LINE; do 
+		case "${LINE%=*}"
+		in
 			access_token|ACCESS_TOKEN) ACCESS_TOKEN=${LINE##*=};;
 			client_id|CLIENT_ID) CLIENT_ID=${LINE##*=};;
 			client_secret|CLIENT_SECRET) CLIENT_SECRET=${LINE##*=};;
@@ -46,12 +50,16 @@ if [[ ! -z "$CONF_FILE" ]]; then
 			package|PACKAGE) PACKAGE=${LINE##*=};;
 			product_ids|PRODUCT_IDS) PRODUCT_IDS=${LINE##*=};;
 			subscription_ids|SUBSCRIPTION_IDS) SUBSCRIPTION_IDS=${LINE##*=};;
-			esac
-		done < $CONF_FILE
-	else
-		echo "Config file \"$CONF_FILE\" does not exist."
-	fi
+		esac
+	done < $CONF_FILE
+}
+
+if [[ -z "$CONF_FILE" && -f "$DEFAULT_CONF_LOCATION" ]]; then
+	CONF_FILE="$DEFAULT_CONF_LOCATION"
+	echo "Using default conf $CONF_FILE"
 fi
+
+[ -f "$CONF_FILE" ] && read_conf || echo "Config file \"$CONF_FILE\" does not exist."
 
 if [[ -z "$PACKAGE" ]]; then
 	echo "Please specify package with -p option or inside config file passed in arguments"
@@ -95,50 +103,49 @@ function invokeRequest() {
 	fi
 }
 
-#"message": "The purchase token does not match the product ID."
-if [[ -z "$SKU" ]]; then
-	
-	if [[ -z ${IS_PRODUCT} ]]; then
-		echo "Subscription ID haven't been passed in arguments via -s option."
-		if [[ -z "${SUBSCRIPTION_IDS}" ]]; then
-			echo "Provide subscription Id via option -s or through subscription_ids=... in config file"
-			echo ${README_MSG}
-			exit 1
-		fi
-		echo "Iterating over ${SUBSCRIPTION_IDS}"
-		POSSIBLE_IDS=$(echo "$SUBSCRIPTION_IDS" | tr ',' '\n')
-	else
-		echo "Product ID haven't been passed in arguments via -s option."
-		if [[ -z "${PRODUCT_IDS}" ]]; then
-			echo "Provide product id via option -s or through product_ids=... in config file"
-			echo ${README_MSG}
-			exit 1
-		fi
-		echo "Iterating over ${PRODUCT_IDS}"
-		POSSIBLE_IDS=$(echo "$PRODUCT_IDS" | tr ',' '\n')
-	fi
-
-  	for SKU in $POSSIBLE_IDS; do
-  		invokeRequest
-  		
-  		# check for "code": 400
-  		if [[ ! -z $(echo "${INVOKE_RESULT}" | grep -Eo "The purchase token does not match the product ID." ) ]]; then
-  			echo "$SKU — doesn't match product purchase token"
-  			continue
-  		fi
-  		if [[ ! -z $(echo "${INVOKE_RESULT}" | grep -Eo "The subscription purchase token does not match the subscription ID." ) ]]; then
-  			echo "$SKU — doesn't match subscription purchase token"
-  			continue
-  		fi
-		
-		echo
-		echo "result for $SKU"
-		echo "$INVOKE_RESULT"
-		exit 0
-  	done
-
-  	echo "Not found"
-else
+if [[ ! -z "$SKU" ]]; then
 	invokeRequest
 	echo "$INVOKE_RESULT"
+	exit 0
 fi
+
+if [[ -z ${IS_PRODUCT} ]]; then
+	echo "Subscription ID haven't been passed in arguments via -s option."
+	if [[ -z "${SUBSCRIPTION_IDS}" ]]; then
+		echo "Provide subscription ID via option -s or through subscription_ids=... in config file"
+		echo ${README_MSG}
+		exit 1
+	fi
+	echo "Iterating over ${SUBSCRIPTION_IDS}"
+	POSSIBLE_IDS=$(echo "$SUBSCRIPTION_IDS" | tr ',' '\n')
+else
+	echo "Product ID haven't been passed in arguments via -s option."
+	if [[ -z "${PRODUCT_IDS}" ]]; then
+		echo "Provide product ID via option -s or through product_ids=... in config file"
+		echo ${README_MSG}
+		exit 1
+	fi
+	echo "Iterating over ${PRODUCT_IDS}"
+	POSSIBLE_IDS=$(echo "$PRODUCT_IDS" | tr ',' '\n')
+fi
+
+for SKU in $POSSIBLE_IDS; do
+	invokeRequest
+	
+	# check for "code": 400
+	if [[ ! -z $(echo "${INVOKE_RESULT}" | grep -Eo "The purchase token does not match the product ID." ) ]]; then
+		echo "$SKU — doesn't match product purchase token"
+		continue
+	fi
+	if [[ ! -z $(echo "${INVOKE_RESULT}" | grep -Eo "The subscription purchase token does not match the subscription ID." ) ]]; then
+		echo "$SKU — doesn't match subscription purchase token"
+		continue
+	fi
+
+echo
+echo "result for $SKU"
+echo "$INVOKE_RESULT"
+exit 0
+done
+
+echo "Not found"
